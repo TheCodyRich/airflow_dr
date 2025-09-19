@@ -8,6 +8,7 @@ from include.helpers import (
     _check_liveliness,
     _retrieve_all_dags,
     _update_dag_runs,
+    _update_in_failover,
     _update_is_paused_in_primary,
     _toggle_dr_dags
 )
@@ -41,10 +42,26 @@ with DAG(
         }
     )
 
-    # PATH A (Failure)
-    wait_for_pull_list_of_dr_dags = EmptyOperator(
-        task_id="wait_for_pull_list_of_dr_dags",
+    primary_is_alive = EmptyOperator(
+        task_id="GOOD__primary_is_alive",
     )
+
+    primary_is_down = EmptyOperator(
+        task_id="BAD__primary_is_down",
+    )
+
+    check_liveliness >> [primary_is_alive, primary_is_down]
+
+    # PATH A (Failure)
+    update_in_failover_true = PythonOperator(
+        task_id="update_in_failover",
+        python_callable=_update_in_failover,
+        op_kwargs={
+            "in_failover": True,
+        }
+    )
+
+    primary_is_down >> update_in_failover_true
 
     # Turn on the DAGs
     turn_on_dags_in_dr = PythonOperator.partial(
@@ -61,8 +78,8 @@ with DAG(
         ),
     )
 
-
-    [check_liveliness, pull_list_of_dr_dags] >> wait_for_pull_list_of_dr_dags >> turn_on_dags_in_dr
+    pull_list_of_dr_dags >> turn_on_dags_in_dr
+    update_in_failover_true >> turn_on_dags_in_dr
 
 
     # PATH B (No Failure)
@@ -75,7 +92,7 @@ with DAG(
         }
     )
 
-    check_liveliness >> pull_list_of_primary_dags
+    primary_is_alive >> pull_list_of_primary_dags
 
     # Turn off DAGs
     turn_off_dags_in_dr = PythonOperator.partial(
@@ -92,6 +109,10 @@ with DAG(
         ),
     )
 
+    primary_is_alive >> turn_off_dags_in_dr
+
+    # TODO: Update DAG runs in primary
+
     update_is_paused_in_primary = PythonOperator.partial(
         task_id="update_is_paused_in_primary",
         python_callable=_update_is_paused_in_primary,
@@ -103,17 +124,20 @@ with DAG(
 
     pull_list_of_primary_dags >> update_is_paused_in_primary
 
-    update_dag_runs = PythonOperator.partial(
-        task_id="update_dag_runs",
+    update_dr_dag_runs = PythonOperator.partial(
+        task_id="update_dr_dag_runs",
         python_callable=_update_dag_runs,
     ).expand(
         op_kwargs=pull_list_of_primary_dags.output.map(
             lambda dag_response: {
                 "dag_response": dag_response,
-                "primary_api_token_name": "PRIMARY_ASTRO_API_TOKEN",  # "{{ var.value.PRIMARY_ASTRO_API_TOKEN }}",
-                "disaster_recovery_api_token_name": "DISASTER_RECOVERY_ASTRO_API_TOKEN",  # "{{ var.value.DISASTER_RECOVERY_ASTRO_API_TOKEN }}",
-                "primary_base_url_name": "PRIMARY_BASE_URL",  # "{{ var.value.PRIMARY_BASE_URL }}",
-                "disaster_recovery_base_url_name": "DISASTER_RECOVERY_BASE_URL",  # "{{ var.value.DISASTER_RECOVERY_BASE_URL }}",
+                "updater_api_token_name": "PRIMARY_ASTRO_API_TOKEN",  # "{{ var.value.PRIMARY_ASTRO_API_TOKEN }}",
+                "updatee_api_token_name": "DISASTER_RECOVERY_ASTRO_API_TOKEN",  # "{{ var.value.DISASTER_RECOVERY_ASTRO_API_TOKEN }}",
+                "updater_base_url_name": "PRIMARY_BASE_URL",  # "{{ var.value.PRIMARY_BASE_URL }}",
+                "updatee_base_url_name": "DISASTER_RECOVERY_BASE_URL",  # "{{ var.value.DISASTER_RECOVERY_BASE_URL }}",
+                "dag_run_id_prefix": "dr_created"
             }
         ),
     )
+
+    pull_list_of_primary_dags >> update_dr_dag_runs

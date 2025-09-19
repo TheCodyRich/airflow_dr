@@ -31,7 +31,11 @@ def _check_liveliness(organization_id: str, deployment_id: str, api_token, **con
         }
     )
 
-    return "pull_list_of_primary_dags" if response.json().get("status") == "HEALTHY" else "wait_for_pull_list_of_dr_dags"
+    return "GOOD__primary_is_alive" if response.json().get("status") == "HEALTHY" else "BAD__primary_is_down"
+
+
+def _update_in_failover(in_failover: bool, **context):
+    Variable.set("in_failover", str(in_failover))
 
 
 def _retrieve_all_dags(api_token: str, base_url: str):
@@ -169,7 +173,13 @@ def __retrieve_dag_runs(dag_id: str, api_token: str, base_url: str):
     return response.get("dag_runs", [])
 
 
-def __update_dag_run(dag_id, dag_run, api_token: str, base_url: str):
+def __update_dag_run(
+    dag_id: str,
+    dag_run,
+    api_token: str,
+    base_url: str,
+    dag_run_id_prefix: str,
+):
     """
     _update_dag_run
 
@@ -189,7 +199,7 @@ def __update_dag_run(dag_id, dag_run, api_token: str, base_url: str):
     _ = requests.post(
         url=f"{base_url}/api/v2/dags/{dag_id}/dagRuns",
         json={
-            "dag_run_id": f"dr_created__{dag_run_id__scheduled}",
+            "dag_run_id": f"{dag_run_id_prefix}__{dag_run_id__scheduled}",
             "data_interval_start": dag_run.get("data_interval_start"),
             "data_interval_end": dag_run.get("data_interval_end"),
             "logical_date": dag_run.get("logical_date"),
@@ -200,7 +210,7 @@ def __update_dag_run(dag_id, dag_run, api_token: str, base_url: str):
     ).json()
 
     _ = requests.patch(
-        url=f"{base_url}/api/v2/dags/{dag_id}/dagRuns/dr_created__{quote(dag_run_id__scheduled)}",
+        url=f"{base_url}/api/v2/dags/{dag_id}/dagRuns/{dag_run_id_prefix}__{quote(dag_run_id__scheduled)}",
         json={
             "state": dag_run_state,
             "note": "State updated by DR DAG."
@@ -211,10 +221,11 @@ def __update_dag_run(dag_id, dag_run, api_token: str, base_url: str):
 
 def _update_dag_runs(
     dag_response,
-    primary_api_token_name: str,
-    disaster_recovery_api_token_name: str,
-    primary_base_url_name: str,
-    disaster_recovery_base_url_name: str,
+    updater_api_token_name: str,
+    updatee_api_token_name: str,
+    updater_base_url_name: str,
+    updatee_base_url_name: str,
+    dag_run_id_prefix: str,
     **context
 ):
     """
@@ -229,8 +240,8 @@ def _update_dag_runs(
 
     dag_runs = __retrieve_dag_runs(
         dag_id,
-        Variable.get(primary_api_token_name),
-        Variable.get(primary_base_url_name)
+        Variable.get(updater_api_token_name),
+        Variable.get(updater_base_url_name)
     )
     logical_dates = []
 
@@ -238,8 +249,9 @@ def _update_dag_runs(
         __update_dag_run(
             dag_id=dag_id,
             dag_run=dag_run,
-            api_token=Variable.get(disaster_recovery_api_token_name),
-            base_url=Variable.get(disaster_recovery_base_url_name)
+            dag_run_id_prefix=dag_run_id_prefix,
+            api_token=Variable.get(updatee_api_token_name),
+            base_url=Variable.get(updatee_base_url_name),
         )
         logical_dates.append(datetime.strptime(dag_run.get("logical_date"), "%Y-%m-%dT%H:%M:%S.%fZ"))
 
