@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from include.helpers import (
     _check_liveliness,
     _retrieve_all_dags,
-    _update_dag_runs,
+    _reconcile_dag_runs,
     _update_in_failover,
     _update_is_paused_in_primary,
     _toggle_dr_dags
@@ -54,7 +54,7 @@ with DAG(
 
     # PATH A (Failure)
     update_in_failover_true = PythonOperator(
-        task_id="update_in_failover",
+        task_id="update_in_failover_true",
         python_callable=_update_in_failover,
         op_kwargs={
             "in_failover": True,
@@ -73,7 +73,7 @@ with DAG(
                 "dag_response": dag_response,
                 "api_token_name": "DISASTER_RECOVERY_ASTRO_API_TOKEN",
                 "base_url_name": "DISASTER_RECOVERY_BASE_URL",
-                "failover": True,
+                "in_failover": True,
             }
         ),
     )
@@ -83,6 +83,16 @@ with DAG(
 
 
     # PATH B (No Failure)
+    update_in_failover_false = PythonOperator(
+        task_id="update_in_failover_false",
+        python_callable=_update_in_failover,
+        op_kwargs={
+            "in_failover": False,
+        }
+    )
+
+    primary_is_alive >> update_in_failover_false
+
     pull_list_of_primary_dags = PythonOperator(
         task_id="pull_list_of_primary_dags",
         python_callable=_retrieve_all_dags,
@@ -124,20 +134,20 @@ with DAG(
 
     pull_list_of_primary_dags >> update_is_paused_in_primary
 
-    update_dr_dag_runs = PythonOperator.partial(
-        task_id="update_dr_dag_runs",
-        python_callable=_update_dag_runs,
+    reconcile_dag_runs = PythonOperator.partial(
+        task_id="reconcile_dag_runs",
+        python_callable=_reconcile_dag_runs,
     ).expand(
         op_kwargs=pull_list_of_primary_dags.output.map(
             lambda dag_response: {
                 "dag_response": dag_response,
-                "updater_api_token_name": "PRIMARY_ASTRO_API_TOKEN",  # "{{ var.value.PRIMARY_ASTRO_API_TOKEN }}",
-                "updatee_api_token_name": "DISASTER_RECOVERY_ASTRO_API_TOKEN",  # "{{ var.value.DISASTER_RECOVERY_ASTRO_API_TOKEN }}",
-                "updater_base_url_name": "PRIMARY_BASE_URL",  # "{{ var.value.PRIMARY_BASE_URL }}",
-                "updatee_base_url_name": "DISASTER_RECOVERY_BASE_URL",  # "{{ var.value.DISASTER_RECOVERY_BASE_URL }}",
+                "primary_api_token_name": "PRIMARY_ASTRO_API_TOKEN",  # "{{ var.value.PRIMARY_ASTRO_API_TOKEN }}",
+                "disaster_recovery_api_token_name": "DISASTER_RECOVERY_ASTRO_API_TOKEN",  # "{{ var.value.DISASTER_RECOVERY_ASTRO_API_TOKEN }}",
+                "primary_base_url_name": "PRIMARY_BASE_URL",  # "{{ var.value.PRIMARY_BASE_URL }}",
+                "disaster_recovery_base_url_name": "DISASTER_RECOVERY_BASE_URL",  # "{{ var.value.DISASTER_RECOVERY_BASE_URL }}",
                 "dag_run_id_prefix": "dr_created"
             }
         ),
     )
 
-    pull_list_of_primary_dags >> update_dr_dag_runs
+    pull_list_of_primary_dags >> reconcile_dag_runs

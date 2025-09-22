@@ -98,7 +98,7 @@ def __flip_dag_switch(dag_id: str, api_token: str, base_url: str, is_paused: boo
         }
     )
 
-def _toggle_dr_dags(dag_response,  api_token_name: str, base_url_name: str, failover=False, **context):
+def _toggle_dr_dags(dag_response,  api_token_name: str, base_url_name: str, in_failover=False, **context):
     """
     _toggle_dr_dags
 
@@ -119,11 +119,12 @@ def _toggle_dr_dags(dag_response,  api_token_name: str, base_url_name: str, fail
     is_paused_in_primary = True if Variable.get(f"{dag_id}_is_paused_in_primary") == "True" else False
     is_paused_in_dr = dag_response.get("is_paused")
 
-    print(f"failover: {failover}")
+    print(f"in_failover: {in_failover}")
     print(f"is_paused_in_dr: {is_paused_in_dr}")
 
     # Only start if it SHOULD be started and is already paused
-    if (is_paused_in_dr and failover) and not is_paused_in_primary:
+    if (is_paused_in_dr and in_failover) and not is_paused_in_primary:
+        # If the DAG is paused in DR, in failover, and the DAG is not paused in primary, then turn it on in DR
         _ = __flip_dag_switch(
             dag_id=dag_id,
             api_token=Variable.get(api_token_name),
@@ -131,7 +132,8 @@ def _toggle_dr_dags(dag_response,  api_token_name: str, base_url_name: str, fail
             is_paused=False
         )
 
-    elif not failover and not is_paused_in_dr:
+    elif not in_failover and not is_paused_in_dr:
+        # If primary is up and running and the DAG is active in DR, it should be turned off in DR
         _ = __flip_dag_switch(
             dag_id=dag_id,
             api_token=Variable.get(api_token_name),
@@ -140,7 +142,12 @@ def _toggle_dr_dags(dag_response,  api_token_name: str, base_url_name: str, fail
         )
 
 
-def __retrieve_dag_runs(dag_id: str, api_token: str, base_url: str):
+def __retrieve_dag_runs(
+    dag_id: str,
+    api_token: str,
+    base_url: str,
+    last_logical_date: str = "2025-01-01T00:00:00",
+):
     """
     __retrieve_dag_runs
 
@@ -148,16 +155,6 @@ def __retrieve_dag_runs(dag_id: str, api_token: str, base_url: str):
     """
     if "backup" in dag_id:
         raise AirflowSkipException(f"Will not perform operations for DR dag with ID: {dag_id}")
-
-    try:
-        last_logical_date = Variable.get(f"{dag_id}_last_logical_date")
-        last_logical_date = last_logical_date if not None else "2025-01-01T00:00:00"
-    except Exception as _:
-        # If the Variable is NOT available, then an exception will be thrown. If that's the case, we'll use 2025-01-01
-        # as the `last_logical_date`
-        last_logical_date = "2025-01-01T00:00:00"
-
-    print(f"BASE_URL: {base_url}")
 
     response = requests.get(
         url=f"{base_url}/api/v2/dags/{dag_id}/dagRuns",
@@ -219,12 +216,12 @@ def __update_dag_run(
     )
 
 
-def _update_dag_runs(
+def _reconcile_dag_runs(
     dag_response,
-    updater_api_token_name: str,
-    updatee_api_token_name: str,
-    updater_base_url_name: str,
-    updatee_base_url_name: str,
+    primary_api_token_name: str,
+    disaster_recovery_api_token_name: str,
+    primary_base_url_name: str,
+    disaster_recovery_base_url_name: str,
     dag_run_id_prefix: str,
     **context
 ):
@@ -234,29 +231,80 @@ def _update_dag_runs(
     Retrieve DAG runs from primary AND upsert those DAG runs in DR. This is used to keep DR in-sync with Primary.
     """
     dag_id: str = dag_response.get("dag_id")
+    print("DAG ID:", dag_id)
 
     if "backup" in dag_id:
         raise AirflowSkipException(f"Will not perform operations for DR dag with ID: {dag_id}")
 
-    dag_runs = __retrieve_dag_runs(
-        dag_id,
-        Variable.get(updater_api_token_name),
-        Variable.get(updater_base_url_name)
+    disaster_recovery_dag_runs = __retrieve_dag_runs(
+        dag_id=dag_id,
+        api_token=Variable.get(disaster_recovery_api_token_name),
+        base_url=Variable.get(disaster_recovery_base_url_name),
+        last_logical_date=Variable.get(f"{dag_id}_last_logical_date")
     )
-    logical_dates = []
 
-    for dag_run in dag_runs:
-        __update_dag_run(
-            dag_id=dag_id,
-            dag_run=dag_run,
-            dag_run_id_prefix=dag_run_id_prefix,
-            api_token=Variable.get(updatee_api_token_name),
-            base_url=Variable.get(updatee_base_url_name),
-        )
-        logical_dates.append(datetime.strptime(dag_run.get("logical_date"), "%Y-%m-%dT%H:%M:%S.%fZ"))
+    # Pull all DAG runs from the DAG in primary that are since the last_logical_date
+    primary_dag_runs = __retrieve_dag_runs(
+        dag_id=dag_id,
+        api_token=Variable.get(primary_api_token_name),
+        base_url=Variable.get(primary_base_url_name),
+        last_logical_date=Variable.get(f"{dag_id}_last_logical_date")
+    )
+
+    print(f"Primary DAG runs: {primary_dag_runs}")
+    print(f"DR DAG runs: {disaster_recovery_dag_runs}")
+
+    dr_logical_dates = [dag_run.get("logical_date") for dag_run in disaster_recovery_dag_runs]
+    primary_logical_dates = [dag_run.get("logical_date") for dag_run in primary_dag_runs]
+
+    max_dr_logical_date = max([datetime.strptime(ld, "%Y-%m-%dT%H:%M:%S.%fZ") for ld in dr_logical_dates])
+    max_primary_logical_date = max([datetime.strptime(ld, "%Y-%m-%dT%H:%M:%S.%fZ") for ld in primary_logical_dates])
+
+    print(f"Max DR logical date: {max_dr_logical_date}")
+    print(f"Max primary logical date: {max_primary_logical_date}")
+
+    if sorted(dr_logical_dates) == sorted(primary_logical_dates):
+        # Update primary DAGs
+        print("No DAG runs need to be reconciled.")
+        pass
+    else:
+        missing_in_dr = [
+            dag_run
+            for dag_run in primary_dag_runs
+            if dag_run.get("logical_date") not in dr_logical_dates
+        ]
+
+        missing_in_primary = [
+            dag_run
+            for dag_run in disaster_recovery_dag_runs
+            if dag_run.get("logical_date") not in primary_logical_dates
+        ]
+
+        print(f"There are {len(missing_in_dr)} DAG runs to be reconciled in DR for {dag_id}.")
+        print(f"There are {len(missing_in_primary)} DAG runs to be reconciled in PRIMARY for {dag_id}.")
+
+        for dag_run in missing_in_dr:
+            __update_dag_run(
+                dag_id=dag_id,
+                dag_run=dag_run,
+                dag_run_id_prefix=dag_run_id_prefix,
+                api_token=Variable.get(disaster_recovery_api_token_name),
+                base_url=Variable.get(disaster_recovery_base_url_name),
+            )
+
+        for dag_run in missing_in_primary:
+            __update_dag_run(
+                dag_id=dag_id,
+                dag_run=dag_run,
+                dag_run_id_prefix=dag_run_id_prefix,
+                api_token=Variable.get(primary_api_token_name),
+                base_url=Variable.get(primary_base_url_name),
+            )
+
+
 
     Variable.set(
         key=f"{dag_id}_last_logical_date",
-        value=max(logical_dates).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        value=max(max_dr_logical_date, max_primary_logical_date).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
     )
 
