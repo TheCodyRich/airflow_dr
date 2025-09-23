@@ -260,6 +260,10 @@ def _reconcile_dag_runs(
     dr_logical_dates = [dag_run.get("logical_date") for dag_run in disaster_recovery_dag_runs]
     primary_logical_dates = [dag_run.get("logical_date") for dag_run in primary_dag_runs]
 
+    # Handle no runs currently existing
+    if len(dr_logical_dates) == 0: dr_logical_dates.append(DEFAULT_LOGICAL_DATE)
+    if len(primary_logical_dates) == 0: primary_logical_dates.append(DEFAULT_LOGICAL_DATE)
+
     max_dr_logical_date = max([datetime.strptime(ld, "%Y-%m-%dT%H:%M:%S.%fZ") for ld in dr_logical_dates])
     max_primary_logical_date = max([datetime.strptime(ld, "%Y-%m-%dT%H:%M:%S.%fZ") for ld in primary_logical_dates])
 
