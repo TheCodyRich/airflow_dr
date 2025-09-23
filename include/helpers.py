@@ -14,6 +14,9 @@ from urllib.parse import quote
 import requests
 
 
+DEFAULT_LOGICAL_DATE: str = "2025-01-01T00:00:00"
+
+
 def _check_liveliness(organization_id: str, deployment_id: str, api_token, **context):
     """
     _check_liveliness
@@ -116,7 +119,7 @@ def _toggle_dr_dags(dag_response,  api_token_name: str, base_url_name: str, in_f
     if "backup" in dag_id:
         raise AirflowSkipException(f"Will not perform operations for DR dag with ID: {dag_id}")
 
-    is_paused_in_primary = True if Variable.get(f"{dag_id}_is_paused_in_primary") == "True" else False
+    is_paused_in_primary = True if Variable.get(f"{dag_id}_is_paused_in_primary", default="False") == "True" else False
     is_paused_in_dr = dag_response.get("is_paused")
 
     print(f"in_failover: {in_failover}")
@@ -146,7 +149,7 @@ def __retrieve_dag_runs(
     dag_id: str,
     api_token: str,
     base_url: str,
-    last_logical_date: str = "2025-01-01T00:00:00",
+    last_logical_date: str = DEFAULT_LOGICAL_DATE,
 ):
     """
     __retrieve_dag_runs
@@ -240,7 +243,7 @@ def _reconcile_dag_runs(
         dag_id=dag_id,
         api_token=Variable.get(disaster_recovery_api_token_name),
         base_url=Variable.get(disaster_recovery_base_url_name),
-        last_logical_date=Variable.get(f"{dag_id}_last_logical_date")
+        last_logical_date=Variable.get(f"{dag_id}_last_logical_date", default=DEFAULT_LOGICAL_DATE),
     )
 
     # Pull all DAG runs from the DAG in primary that are since the last_logical_date
@@ -248,7 +251,7 @@ def _reconcile_dag_runs(
         dag_id=dag_id,
         api_token=Variable.get(primary_api_token_name),
         base_url=Variable.get(primary_base_url_name),
-        last_logical_date=Variable.get(f"{dag_id}_last_logical_date")
+        last_logical_date=Variable.get(f"{dag_id}_last_logical_date", default=DEFAULT_LOGICAL_DATE)
     )
 
     print(f"Primary DAG runs: {primary_dag_runs}")
