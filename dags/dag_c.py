@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 with DAG(
         dag_id="dag_c",
         start_date=datetime(2025, 1, 1),
-        schedule=timedelta(days=1)
+        schedule="* * * * *"
 ) as dag:
     @task
     def task_1():

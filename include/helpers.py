@@ -5,7 +5,7 @@ Author: Jake Roach
 Date: 2025-09-16
 """
 
-from airflow.sdk import Variable, task
+from airflow.sdk import Variable
 from airflow.exceptions import AirflowSkipException
 
 from datetime import datetime
@@ -15,6 +15,28 @@ import requests
 
 
 DEFAULT_LOGICAL_DATE: str = "2025-01-01T00:00:00"
+
+
+def _parse_logical_date(logical_date_str: str) -> datetime:
+    """
+    Parse logical date string that may or may not include microseconds.
+
+    Handles both formats:
+    - 2025-09-23T20:15:00Z (without microseconds)
+    - 2025-09-23T20:15:00.123456Z (with microseconds)
+    """
+    # Try parsing with microseconds first
+    try:
+        return datetime.strptime(logical_date_str, "%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError:
+        # If that fails, try parsing without microseconds
+        try:
+            return datetime.strptime(logical_date_str, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            # If both fail, raise a more descriptive error
+            raise ValueError(
+                f"Unable to parse logical date: {logical_date_str}. Expected format: YYYY-MM-DDTHH:MM:SS[.ffffff]Z"
+            )
 
 
 def _check_liveliness(organization_id: str, deployment_id: str, api_token, **context):
@@ -30,11 +52,15 @@ def _check_liveliness(organization_id: str, deployment_id: str, api_token, **con
         url=f"https://api.astronomer.io/platform/v1beta1/organizations/{organization_id}/deployments/{deployment_id}",
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_token}"
-        }
+            "Authorization": f"Bearer {api_token}",
+        },
     )
 
-    return "GOOD__primary_is_alive" if response.json().get("status") == "HEALTHY" else "BAD__primary_is_down"
+    return (
+        "GOOD__primary_is_alive"
+        if response.json().get("status") == "HEALTHY"
+        else "BAD__primary_is_down"
+    )
 
 
 def _update_in_failover(in_failover: bool, **context):
@@ -60,7 +86,9 @@ def _retrieve_all_dags(api_token: str, base_url: str):
     if isinstance(dags, list):
         return dags
 
-    raise Exception(f"Unexpected response type. `dags` is `{dags}` when it should be a `list`.")
+    raise Exception(
+        f"Unexpected response type. `dags` is `{dags}` when it should be a `list`."
+    )
 
 
 def _update_is_paused_in_primary(dag_response, **context):
@@ -77,7 +105,9 @@ def _update_is_paused_in_primary(dag_response, **context):
     is_paused = dag_response.get("is_paused")
 
     if "backup" in dag_id:
-        raise AirflowSkipException(f"Will not perform operations for DR dag with ID: {dag_id}")
+        raise AirflowSkipException(
+            f"Will not perform operations for DR dag with ID: {dag_id}"
+        )
 
     print(f"{dag_id} is paused: {is_paused}")
 
@@ -92,16 +122,17 @@ def __flip_dag_switch(dag_id: str, api_token: str, base_url: str, is_paused: boo
     """
     return requests.patch(
         url=f"{base_url}/api/v2/dags/{dag_id}",
-        json={
-            "is_paused": is_paused
-        },
+        json={"is_paused": is_paused},
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_token}",
-        }
+        },
     )
 
-def _toggle_dr_dags(dag_response,  api_token_name: str, base_url_name: str, in_failover=False, **context):
+
+def _toggle_dr_dags(
+    dag_response, api_token_name: str, base_url_name: str, in_failover=False, **context
+):
     """
     _toggle_dr_dags
 
@@ -117,9 +148,13 @@ def _toggle_dr_dags(dag_response,  api_token_name: str, base_url_name: str, in_f
     dag_id = dag_response.get("dag_id")
 
     if "backup" in dag_id:
-        raise AirflowSkipException(f"Will not perform operations for DR dag with ID: {dag_id}")
+        raise AirflowSkipException(
+            f"Will not perform operations for DR dag with ID: {dag_id}"
+        )
 
-    is_paused_in_primary = True if Variable.get(f"{dag_id}_is_paused_in_primary", default="False") == "True" else False
+    is_paused_in_primary = (
+        Variable.get(f"{dag_id}_is_paused_in_primary", default="False") == "True"
+    )
     is_paused_in_dr = dag_response.get("is_paused")
 
     print(f"in_failover: {in_failover}")
@@ -132,7 +167,7 @@ def _toggle_dr_dags(dag_response,  api_token_name: str, base_url_name: str, in_f
             dag_id=dag_id,
             api_token=Variable.get(api_token_name),
             base_url=Variable.get(base_url_name),
-            is_paused=False
+            is_paused=False,
         )
 
     elif not in_failover and not is_paused_in_dr:
@@ -141,7 +176,7 @@ def _toggle_dr_dags(dag_response,  api_token_name: str, base_url_name: str, in_f
             dag_id=dag_id,
             api_token=Variable.get(api_token_name),
             base_url=Variable.get(base_url_name),
-            is_paused=True
+            is_paused=True,
         )
 
 
@@ -157,7 +192,9 @@ def __retrieve_dag_runs(
 
     """
     if "backup" in dag_id:
-        raise AirflowSkipException(f"Will not perform operations for DR dag with ID: {dag_id}")
+        raise AirflowSkipException(
+            f"Will not perform operations for DR dag with ID: {dag_id}"
+        )
 
     response = requests.get(
         url=f"{base_url}/api/v2/dags/{dag_id}/dagRuns",
@@ -167,7 +204,7 @@ def __retrieve_dag_runs(
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_token}",
-        }
+        },
     ).json()
 
     return response.get("dag_runs", [])
@@ -187,7 +224,7 @@ def __update_dag_run(
     Deployment.
     """
     dag_run_id = dag_run.get("dag_run_id")
-    dag_run_id__scheduled = dag_run_id.split('scheduled__')[-1]
+    dag_run_id__scheduled = dag_run_id.split("scheduled__")[-1]
     dag_run_state = dag_run.get("state")
 
     headers = {
@@ -204,17 +241,14 @@ def __update_dag_run(
             "data_interval_end": dag_run.get("data_interval_end"),
             "logical_date": dag_run.get("logical_date"),
             "run_after": "2030-01-01T00:00:00",
-            "note": "DAG run created by DR DAG."
+            "note": "DAG run created by DR DAG.",
         },
         headers=headers,
     ).json()
 
     _ = requests.patch(
         url=f"{base_url}/api/v2/dags/{dag_id}/dagRuns/{dag_run_id_prefix}__{quote(dag_run_id__scheduled)}",
-        json={
-            "state": dag_run_state,
-            "note": "State updated by DR DAG."
-        },
+        json={"state": dag_run_state, "note": "State updated by DR DAG."},
         headers=headers,
     )
 
@@ -226,7 +260,7 @@ def _reconcile_dag_runs(
     primary_base_url_name: str,
     disaster_recovery_base_url_name: str,
     dag_run_id_prefix: str,
-    **context
+    **context,
 ):
     """
     _update_dag_runs
@@ -237,13 +271,17 @@ def _reconcile_dag_runs(
     print("DAG ID:", dag_id)
 
     if "backup" in dag_id:
-        raise AirflowSkipException(f"Will not perform operations for DR dag with ID: {dag_id}")
+        raise AirflowSkipException(
+            f"Will not perform operations for DR dag with ID: {dag_id}"
+        )
 
     disaster_recovery_dag_runs = __retrieve_dag_runs(
         dag_id=dag_id,
         api_token=Variable.get(disaster_recovery_api_token_name),
         base_url=Variable.get(disaster_recovery_base_url_name),
-        last_logical_date=Variable.get(f"{dag_id}_last_logical_date", default=DEFAULT_LOGICAL_DATE),
+        last_logical_date=Variable.get(
+            f"{dag_id}_last_logical_date", default=DEFAULT_LOGICAL_DATE
+        ),
     )
 
     # Pull all DAG runs from the DAG in primary that are since the last_logical_date
@@ -251,21 +289,31 @@ def _reconcile_dag_runs(
         dag_id=dag_id,
         api_token=Variable.get(primary_api_token_name),
         base_url=Variable.get(primary_base_url_name),
-        last_logical_date=Variable.get(f"{dag_id}_last_logical_date", default=DEFAULT_LOGICAL_DATE)
+        last_logical_date=Variable.get(
+            f"{dag_id}_last_logical_date", default=DEFAULT_LOGICAL_DATE
+        ),
     )
 
     print(f"Primary DAG runs: {primary_dag_runs}")
     print(f"DR DAG runs: {disaster_recovery_dag_runs}")
 
-    dr_logical_dates = [dag_run.get("logical_date") for dag_run in disaster_recovery_dag_runs]
-    primary_logical_dates = [dag_run.get("logical_date") for dag_run in primary_dag_runs]
+    dr_logical_dates = [
+        dag_run.get("logical_date") for dag_run in disaster_recovery_dag_runs
+    ]
+    primary_logical_dates = [
+        dag_run.get("logical_date") for dag_run in primary_dag_runs
+    ]
 
     # Handle no runs currently existing
-    if len(dr_logical_dates) == 0: dr_logical_dates.append(DEFAULT_LOGICAL_DATE)
-    if len(primary_logical_dates) == 0: primary_logical_dates.append(DEFAULT_LOGICAL_DATE)
+    if len(dr_logical_dates) == 0:
+        dr_logical_dates.append(DEFAULT_LOGICAL_DATE)
+    if len(primary_logical_dates) == 0:
+        primary_logical_dates.append(DEFAULT_LOGICAL_DATE)
 
-    max_dr_logical_date = max([datetime.strptime(ld, "%Y-%m-%dT%H:%M:%S.%fZ") for ld in dr_logical_dates])
-    max_primary_logical_date = max([datetime.strptime(ld, "%Y-%m-%dT%H:%M:%S.%fZ") for ld in primary_logical_dates])
+    max_dr_logical_date = max([_parse_logical_date(ld) for ld in dr_logical_dates])
+    max_primary_logical_date = max(
+        [_parse_logical_date(ld) for ld in primary_logical_dates]
+    )
 
     print(f"Max DR logical date: {max_dr_logical_date}")
     print(f"Max primary logical date: {max_primary_logical_date}")
@@ -287,8 +335,12 @@ def _reconcile_dag_runs(
             if dag_run.get("logical_date") not in primary_logical_dates
         ]
 
-        print(f"There are {len(missing_in_dr)} DAG runs to be reconciled in DR for {dag_id}.")
-        print(f"There are {len(missing_in_primary)} DAG runs to be reconciled in PRIMARY for {dag_id}.")
+        print(
+            f"There are {len(missing_in_dr)} DAG runs to be reconciled in DR for {dag_id}."
+        )
+        print(
+            f"There are {len(missing_in_primary)} DAG runs to be reconciled in PRIMARY for {dag_id}."
+        )
 
         for dag_run in missing_in_dr:
             __update_dag_run(
@@ -308,10 +360,9 @@ def _reconcile_dag_runs(
                 base_url=Variable.get(primary_base_url_name),
             )
 
-
-
     Variable.set(
         key=f"{dag_id}_last_logical_date",
-        value=max(max_dr_logical_date, max_primary_logical_date).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        value=max(max_dr_logical_date, max_primary_logical_date).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        ),
     )
-

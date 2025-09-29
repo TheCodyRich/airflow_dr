@@ -1,8 +1,10 @@
+from ast import Continue
 from airflow.sdk import DAG
 from airflow.providers.standard.operators.python import BranchPythonOperator, PythonOperator
 from airflow.operators.empty import EmptyOperator
 
 from datetime import datetime, timedelta
+import time
 
 from include.helpers import (
     _check_liveliness,
@@ -17,7 +19,8 @@ from include.helpers import (
 with DAG(
     dag_id="backup",
     start_date=datetime(2025, 1, 1),
-    schedule=timedelta(minutes=10)
+    schedule="@continuous",
+    max_active_runs=1
 ) as dag:
 
     # First, check if it is down. If so, immediately kickoff all DAGs in the existing instance that were on
@@ -66,6 +69,7 @@ with DAG(
     # Turn on the DAGs
     turn_on_dags_in_dr = PythonOperator.partial(
         task_id="turn_on_dags_in_dr",
+        map_index_template="{{ dag_response.dag_id }}",
         python_callable=_toggle_dr_dags,
     ).expand(
         op_kwargs=pull_list_of_dr_dags.output.map(
@@ -107,6 +111,7 @@ with DAG(
     # Turn off DAGs
     turn_off_dags_in_dr = PythonOperator.partial(
         task_id="turn_off_dags_in_dr",
+        map_index_template="{{ dag_response.dag_id }}",
         python_callable=_toggle_dr_dags,
     ).expand(
         op_kwargs=pull_list_of_dr_dags.output.map(  # Assumption is that primary DAGs == DR DAGs
@@ -125,6 +130,7 @@ with DAG(
 
     update_is_paused_in_primary = PythonOperator.partial(
         task_id="update_is_paused_in_primary",
+        map_index_template="{{ dag_response.dag_id }}",
         python_callable=_update_is_paused_in_primary,
     ).expand(
         op_kwargs=pull_list_of_primary_dags.output.map(
@@ -136,6 +142,8 @@ with DAG(
 
     reconcile_dag_runs = PythonOperator.partial(
         task_id="reconcile_dag_runs",
+        map_index_template="{{ dag_response.dag_id }}",
+        execution_timeout=timedelta(seconds=20),
         python_callable=_reconcile_dag_runs,
     ).expand(
         op_kwargs=pull_list_of_primary_dags.output.map(
@@ -151,3 +159,18 @@ with DAG(
     )
 
     pull_list_of_primary_dags >> reconcile_dag_runs
+
+    # 10 second sleep to give a breather
+    final_sleep_task = PythonOperator(
+        task_id="final_sleep_task",
+        trigger_rule="none_failed_min_one_success",
+        python_callable=lambda: time.sleep(20),
+    )
+
+    # Set up dependencies so final task runs after all completion paths
+    [
+        turn_on_dags_in_dr,
+        turn_off_dags_in_dr,
+        update_is_paused_in_primary,
+        reconcile_dag_runs,
+    ] >> final_sleep_task
