@@ -14,7 +14,7 @@ from urllib.parse import quote
 import requests
 
 
-DEFAULT_LOGICAL_DATE: str = "2025-01-01T00:00:00"
+DEFAULT_LOGICAL_DATE: str = "2025-01-01T00:00:00Z"
 
 
 def _parse_logical_date(logical_date_str: str) -> datetime:
@@ -58,7 +58,7 @@ def _check_liveliness(organization_id: str, deployment_id: str, api_token, **con
 
     return (
         "GOOD__primary_is_alive"
-        if response.json().get("status") == "HEALTHY"
+        if response.json().get("status") in ["HEALTHY", "DEPLOYING"]
         else "BAD__primary_is_down"
     )
 
